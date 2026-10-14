@@ -38,7 +38,13 @@ import type {
   TerminalControl,
   TunnelCredentials,
 } from '@cc-desk-tunnel/protocol';
-import { runClaude, nativeDirectory, prepareNativeDirectory, readNativeStatus } from './claude.ts';
+import {
+  runClaude,
+  nativeDirectory,
+  memoryDirectory,
+  prepareNativeDirectory,
+  readNativeStatus,
+} from './claude.ts';
 import type { ClaudeOptions } from './claude.ts';
 import { ClientReleases } from './client-release.ts';
 import { DomainError } from './errors.ts';
@@ -456,6 +462,7 @@ export function createProxyServer(options: ServerOptions) {
       const status = await runClaude(options.claude!, {
         sessionId: run.sessionId,
         nativeRoot: session.nativeRoot ?? session.id,
+        memoryDirectory: memoryDirectory(store.directory, session),
         projectPath: said.projectPath,
         platform: said.platform,
         permissionMode: session.permissionMode,
@@ -639,7 +646,12 @@ export function createProxyServer(options: ServerOptions) {
         options.claude.executable,
         terminalArguments(options.claude, session, sessionSsh(store.directory, session.id, ssh)),
         {
-          cwd: prepareNativeDirectory(options.claude, store.directory, nativeRoot(session.id)),
+          cwd: prepareNativeDirectory(
+            options.claude,
+            store.directory,
+            nativeRoot(session.id),
+            memoryDirectory(store.directory, session),
+          ),
           cols: command.cols,
           rows: command.rows,
           env: terminalEnvironment(options.claude),

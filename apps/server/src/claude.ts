@@ -1,5 +1,6 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { join, resolve } from 'node:path';
 import { query, getSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -39,6 +40,8 @@ export type ClaudeRun = {
   sessionId: string;
   // The session whose Linux directory holds this session's native history; itself unless it is a fork.
   nativeRoot: string;
+  // Where the notes Claude keeps for this project are; see memoryDirectory.
+  memoryDirectory?: string;
   projectPath: string;
   // The system of the device, as the session's prompt has it.
   platform: DevicePlatform;
@@ -88,6 +91,7 @@ export function remotePrompt(
     `Send a script on standard input, as a quoted Bash here-document: ssh -F ${JSON.stringify(ssh.configPath)} device-script <<'PS' ... PS. ${terms.script}`,
     `device-script is the host device with one fixed command, which the configuration shows as RemoteCommand, and takes none of its own. ${terms.command}`,
     'If the device is unreachable, say so; never fall back to this host. After an interruption report results as unknown; do not repeat side effects on your own.',
+    'Before the first action of a session, look in the project directory on the device for CLAUDE.md and AGENTS.md, read the ones that exist, and follow them. The CLI loads project instructions from its own working directory on this host, which holds no copy of the project, so it never sees these.',
     'To look at a picture on the device, such as a pasted screenshot or an attached image, copy that one file with scp to a temporary file on this host, open it with the Read tool, and delete the copy afterwards. That is the only use of Read on this host for a file from the device.',
     'Commands may run concurrently. One that blocks holds the turn until its Bash timeout: size the timeout to the work, and run anything long-lived, such as a dev server or watcher, as a background Bash task. Do not count on a process outliving the ssh command that started it, nor on ending the command to stop it: keep the command running for as long as the process is needed, and stop the process itself on the device.',
     `Scheduled and recurring prompts are sent by the desktop client, not by cron on this host: edit the UTF-8 JSON file whose path is in the device's CC_DESK_TUNNEL_SCHEDULES environment variable (its "说明" field documents the format; changes apply within seconds). This session's ID for a task that continues it: ${sessionId}.`,
@@ -100,7 +104,28 @@ export function nativeDirectory(dataDir: string, sessionId: string) {
   return join(dataDir, 'native', sessionId);
 }
 
-export function prepareNativeDirectory(options: ClaudeOptions, dataDir: string, sessionId: string) {
+// The CLI files the notes Claude keeps by working directory, which is new for every session, so each session
+// would begin without what the earlier ones of the project learned. They are filed by device and project instead.
+export function memoryDirectory(
+  dataDir: string,
+  session: { projectPath: string; device?: { id: string } | null },
+) {
+  // A session without a project works in a new folder of its own, <root>/<yyyy-mm-dd>/<hhmmss>, made by the
+  // client; those sessions share the notes of their root.
+  const plain = /^(.+)[\\/]\d{4}-\d{2}-\d{2}[\\/][^\\/]+$/.exec(session.projectPath);
+  const key = createHash('sha256')
+    .update(`${session.device?.id ?? ''}\n${plain ? `plain\n${plain[1]}` : session.projectPath}`)
+    .digest('hex')
+    .slice(0, 16);
+  return resolve(dataDir, 'memory', key);
+}
+
+export function prepareNativeDirectory(
+  options: ClaudeOptions,
+  dataDir: string,
+  sessionId: string,
+  memory?: string,
+) {
   const cwd = nativeDirectory(dataDir, sessionId);
   mkdirSync(cwd, { recursive: true, mode: 0o700 });
   const settingsDirectory = join(cwd, '.claude');
@@ -110,6 +135,10 @@ export function prepareNativeDirectory(options: ClaudeOptions, dataDir: string, 
     ? JSON.parse(readFileSync(localSettingsPath, 'utf8'))
     : {};
   settings.cleanupPeriodDays = options.contextRetentionDays ?? 3650;
+  if (memory) {
+    mkdirSync(memory, { recursive: true, mode: 0o700 });
+    settings.autoMemoryDirectory = memory;
+  }
   writeFileSync(localSettingsPath, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
   return cwd;
 }
@@ -120,7 +149,7 @@ export async function runClaude(
 ): Promise<'completed' | 'failed' | 'cancelled'> {
   if (process.platform === 'win32') throw new Error('Native adapter must run on Linux.');
   const mapper = new ClaudeStream(run.emit, run.permissionMode, run.effort);
-  const cwd = prepareNativeDirectory(options, run.dataDir, run.nativeRoot);
+  const cwd = prepareNativeDirectory(options, run.dataDir, run.nativeRoot, run.memoryDirectory);
   if (run.resume && !(await getSessionInfo(run.sessionId, { dir: cwd }))) {
     run.emit({
       type: 'run.error',

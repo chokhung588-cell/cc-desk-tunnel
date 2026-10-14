@@ -390,6 +390,11 @@ test('the prompt lets the model look at a picture of the device by copying that 
   assert.match(prompt, /Do not use this host's Read\/Edit tools on project files/);
 });
 
+test('the prompt has the model read the project instructions that live on the device', () => {
+  const prompt = remotePrompt('D:\\work', { configPath: '/private/ssh_config' }, 'session');
+  assert.match(prompt, /look in the project directory on the device for CLAUDE\.md and AGENTS\.md/);
+  assert.match(prompt, /holds no copy of the project/);
+});
 test('a device with a POSIX shell gets a script command and a prompt of its own', () => {
   const files = sshConfig(
     '/tmp/private',
